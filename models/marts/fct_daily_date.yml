@@ -1,0 +1,38 @@
+version: 2
+
+models:
+  - name: stg_exchange_rates
+    description: "Cast + renamed view of raw_exchange_rates. Grain = one row per (rate_date, base_currency, quote_currency)."
+    columns:
+      - name: rate_date
+        data_tests: [not_null]
+      - name: base_currency
+        data_tests: [not_null]
+      - name: quote_currency
+        data_tests: [not_null]
+      - name: exchange_rate
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "> 0"
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - rate_date
+            - base_currency
+            - quote_currency
+  - name: fct_daily_date
+    description: Daily FX rates with trading-day moving averages, 30d volatility, running high/low, and 1-day % change.
+    columns:
+      - name: exchange_rate
+        data_tests: [not_null]
+      - name: ma_7d
+        description: 7 trading-day simple moving average.
+      - name: volatility_30d
+        description: 30 trading-day rolling sample std dev. NULL until 2+ rows exist in the window.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - rate_date
+            - base_currency
+            - quote_currency

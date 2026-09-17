@@ -1,0 +1,126 @@
+name: daily-fx-pipeline
+
+# Runs the full FX ELT pipeline (extract.py -> dbt) once every morning and logs
+# whether the run succeeded. Also triggerable by hand, with an optional backfill range.
+on:
+  schedule:
+    - cron: "0 0 * * *"        # 00:00 UTC = 07:00 Asia/Bangkok, daily
+  workflow_dispatch:
+    inputs:
+      backfill_start:
+        description: "Backfill start date YYYY-MM-DD (optional; requires backfill_end)"
+        required: false
+      backfill_end:
+        description: "Backfill end date YYYY-MM-DD (optional; requires backfill_start)"
+        required: false
+
+# Never let two pipeline runs touch the warehouse at the same time.
+concurrency:
+  group: fx-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      # Shared by BOTH extract.py and dbt (ci/profiles.yml reads the same names).
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_PORT: ${{ secrets.DB_PORT }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_USER: ${{ secrets.DB_USER }}
+      PGPASSWORD: ${{ secrets.PGPASSWORD }}
+      PGSSLMODE: require          # libpq honours this → extract.py needs no code change
+      DB_SCHEMA: raw             # extract.py load target (raw.raw_exchange_rates)
+      DB_TARGET_SCHEMA: public   # dbt output schema (staging view + marts table)
+      DBT_PROFILES_DIR: ci       # use ci/profiles.yml, not ~/.dbt
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Apply setup.sql (idempotent — creates raw schema/table if missing)
+        run: |
+          python - <<'PY'
+          import os, psycopg2
+          conn = psycopg2.connect(
+              host=os.environ["DB_HOST"], port=os.environ["DB_PORT"],
+              dbname=os.environ["DB_NAME"], user=os.environ["DB_USER"],
+              password=os.environ["PGPASSWORD"],
+          )
+          conn.autocommit = True
+          with conn.cursor() as cur, open("setup.sql", "r", encoding="utf-8") as f:
+              cur.execute(f.read())
+          conn.close()
+          print("setup.sql applied.")
+          PY
+
+      - name: Extract / Load (latest, or backfill if both inputs given)
+        run: |
+          if [ -n "${{ github.event.inputs.backfill_start }}" ] && [ -n "${{ github.event.inputs.backfill_end }}" ]; then
+            echo "Backfilling ${{ github.event.inputs.backfill_start }} .. ${{ github.event.inputs.backfill_end }}"
+            python extract.py "${{ github.event.inputs.backfill_start }}" "${{ github.event.inputs.backfill_end }}"
+          else
+            echo "Fetching latest rates"
+            python extract.py
+          fi
+
+      - name: dbt deps
+        run: dbt deps
+
+      - name: dbt build (run + test all models)
+        run: dbt build
+
+      - name: dbt source freshness (non-blocking)
+        run: dbt source freshness
+        continue-on-error: true
+
+      - name: Report row counts to summary
+        if: success()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import os, psycopg2
+          conn = psycopg2.connect(
+              host=os.environ["DB_HOST"], port=os.environ["DB_PORT"],
+              dbname=os.environ["DB_NAME"], user=os.environ["DB_USER"],
+              password=os.environ["PGPASSWORD"],
+          )
+          with conn.cursor() as cur:
+              cur.execute("select count(*), max(rate_date) from raw.raw_exchange_rates;")
+              n, latest = cur.fetchone()
+          conn.close()
+          print("### Data loaded")
+          print(f"- raw.raw_exchange_rates rows: **{n}**")
+          print(f"- latest rate_date: **{latest}**")
+          PY
+
+      - name: Write run status to summary
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "## ✅ FX pipeline succeeded" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## ❌ FX pipeline FAILED (status: ${{ job.status }})" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "- Run ID: ${{ github.run_id }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Trigger: ${{ github.event_name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Finished (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload dbt logs & artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbt-logs-${{ github.run_id }}
+          path: |
+            logs/
+            target/
+          if-no-files-found: ignore
+          retention-days: 14

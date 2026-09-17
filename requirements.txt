@@ -1,0 +1,7 @@
+# CI / runtime dependencies for the FX ELT pipeline.
+# extract.py needs: requests, psycopg2 (psycopg2-binary is easiest on CI runners).
+# dbt needs the Postgres adapter (pulls in dbt-core). dbt_utils is NOT here — it is
+# installed from packages.yml via `dbt deps` into dbt_packages/.
+requests>=2.31
+psycopg2-binary>=2.9,<3
+dbt-postgres>=1.8,<2.0

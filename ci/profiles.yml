@@ -1,0 +1,17 @@
+# CI-only dbt profile. Reads everything from environment variables (fed by GitHub
+# secrets in the workflow) so no credentials are committed. Placed under ci/ so it
+# never shadows the developer's local ~/.dbt/profiles.yml; the workflow selects it
+# with DBT_PROFILES_DIR: ci. Env var names match extract.py so both stages share config.
+exchange_rate:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('DB_HOST') }}"
+      port: "{{ env_var('DB_PORT', '5432') | as_number }}"
+      user: "{{ env_var('DB_USER') }}"
+      password: "{{ env_var('PGPASSWORD') }}"
+      dbname: "{{ env_var('DB_NAME') }}"
+      schema: "{{ env_var('DB_TARGET_SCHEMA', 'public') }}"
+      sslmode: "{{ env_var('PGSSLMODE', 'require') }}"
+      threads: 4
