@@ -38,6 +38,14 @@ models:
         description: "% change vs 30 trading days prior. NULL for the first 30 rows per pair."
       - name: pct_change_ytd
         description: "% change since the first trading day of the calendar year."
+      - name: volatility_30d_pct
+        description: volatility_30d as a % of the rate — comparable across pairs (raw stddev scales with price level).
+      - name: ret_vol_30d
+        description: "30 trading-day sample std dev of daily returns (pct_change_1d). NULL early in each pair."
+      - name: ret_zscore_1d
+        description: "Today's pct_change_1d in units of ret_vol_30d (z-score). Basis for the anomaly flag."
+      - name: is_anomaly
+        description: "True when |ret_zscore_1d| >= 2 (unusually large daily move vs the pair's own return volatility)."
     data_tests:
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns:

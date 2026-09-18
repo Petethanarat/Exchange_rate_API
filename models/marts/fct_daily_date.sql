@@ -69,12 +69,51 @@ with_metrics as (
     -- UNBOUNDED PRECEDING -> CURRENT ROW, so max/min give a RUNNING high/low.
     -- lag() ignores the frame, so it correctly returns the prior row.
     window w as (partition by pair_currency order by rate_date)
- 
+
+),
+
+with_returns as (
+
+    select
+        *,
+        round(
+            (exchange_rate - prev_rate) / nullif(prev_rate, 0) * 100
+        , 4) as pct_change_1d,
+
+        -- volatility as % of the rate: comparable ACROSS pairs. Raw stddev is not
+        -- — it scales with the price level, so JPY always looks "most volatile".
+        round(volatility_30d / nullif(exchange_rate, 0) * 100, 4) as volatility_30d_pct
+
+    from with_metrics
+
+),
+
+with_risk as (
+
+    select
+        *,
+
+        -- 30 trading-day std dev of DAILY RETURNS (pct_change_1d) — the correct
+        -- baseline for "is today's move unusual", unlike volatility_30d which is
+        -- the std dev of the price level.
+        round(
+            stddev_samp(pct_change_1d) over (
+                partition by pair_currency order by rate_date
+                rows between 29 preceding and current row
+            )
+        , 4) as ret_vol_30d
+
+    from with_returns
+
 )
- 
+
 select
     *,
-    round(
-        (exchange_rate - prev_rate) / nullif(prev_rate, 0) * 100
-    , 4) as pct_change_1d
-from with_metrics
+
+    -- z-score of today's move vs its own 30d return volatility
+    round(pct_change_1d / nullif(ret_vol_30d, 0), 3) as ret_zscore_1d,
+
+    -- anomaly flag: |z| >= 2 (~outside the 95% band). NULL z -> not flagged.
+    coalesce(abs(pct_change_1d / nullif(ret_vol_30d, 0)) >= 2, false) as is_anomaly
+
+from with_risk
