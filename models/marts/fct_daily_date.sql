@@ -35,7 +35,33 @@ with_metrics as (
  
         -- running high / low since data begins
         max(exchange_rate) over w as running_high,
-        min(exchange_rate) over w as running_low
+        min(exchange_rate) over w as running_low,
+
+        -- rebased index: 100 at each pair's first trading day (fixed baseline).
+        -- first_value over w (frame = unbounded preceding -> current row) is the
+        -- earliest row's rate, constant across the partition.
+        round(
+            exchange_rate / first_value(exchange_rate) over w * 100
+        , 4) as rate_indexed,
+
+        -- multi-horizon % change (trading-day offsets: 7 / 30 rows back)
+        round(
+            (exchange_rate - lag(exchange_rate, 7) over w)
+            / nullif(lag(exchange_rate, 7) over w, 0) * 100
+        , 4) as pct_change_7d,
+
+        round(
+            (exchange_rate - lag(exchange_rate, 30) over w)
+            / nullif(lag(exchange_rate, 30) over w, 0) * 100
+        , 4) as pct_change_30d,
+
+        -- % change since the first trading day of the calendar year (YTD)
+        round(
+            (exchange_rate / first_value(exchange_rate) over (
+                partition by pair_currency, date_trunc('year', rate_date)
+                order by rate_date
+            ) - 1) * 100
+        , 4) as pct_change_ytd
  
     from rates
  
